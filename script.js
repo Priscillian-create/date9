@@ -18,6 +18,10 @@ let currentPage = "pos", isOnline = navigator.onLine, syncQueue = [];
 let connectionRetryCount = 0;
 const MAX_RETRY_ATTEMPTS = 3, RETRY_DELAY = 5000;
 
+// New global variables for extended features
+let expenses = [], purchases = [], stockAlerts = [], profitData = [];
+let expenseCategories = ['Rent', 'Utilities', 'Salaries', 'Supplies', 'Marketing', 'Maintenance', 'Other'];
+
 // Settings - Changed from const to let to allow reassignment
 let settings = {
     storeName: "Pa Gerrys Mart",
@@ -34,7 +38,11 @@ const STORAGE_KEYS = {
     DELETED_SALES: 'pagerrysmart_deleted_sales',
     USERS: 'pagerrysmart_users',
     SETTINGS: 'pagerrysmart_settings',
-    CURRENT_USER: 'pagerrysmart_current_user'
+    CURRENT_USER: 'pagerrysmart_current_user',
+    EXPENSES: 'pagerrysmart_expenses',
+    PURCHASES: 'pagerrysmart_purchases',
+    STOCK_ALERTS: 'pagerrysmart_stock_alerts',
+    PROFIT_DATA: 'pagerrysmart_profit_data'
 };
 
 // DOM elements
@@ -555,6 +563,231 @@ const DataModule = {
         }
     },
     
+    async fetchExpenses() {
+        try {
+            if (isOnline) {
+                const { data, error } = await supabase.from('expenses').select('*').order('date', { ascending: false });
+                if (error) throw error;
+                expenses = data || [];
+                saveToLocalStorage();
+                return expenses;
+            }
+            return expenses;
+        } catch (error) {
+            console.error('Error in fetchExpenses:', error);
+            showNotification('Error fetching expenses: ' + error.message, 'error');
+            return expenses;
+        }
+    },
+    
+    async saveExpense(expense) {
+        try {
+            const expenseToSave = {
+                ...expense,
+                created_at: new Date().toISOString(),
+                created_by: currentUser.id
+            };
+            
+            if (isOnline) {
+                const { data, error } = await supabase
+                    .from('expenses')
+                    .insert(expenseToSave)
+                    .select();
+                
+                if (error) throw error;
+                
+                if (data && data.length > 0) {
+                    expenses.unshift(data[0]);
+                    saveToLocalStorage();
+                    return { success: true, expense: data[0] };
+                }
+            } else {
+                expenseToSave.id = 'temp_' + Date.now();
+                expenses.unshift(expenseToSave);
+                saveToLocalStorage();
+                
+                addToSyncQueue({
+                    type: 'saveExpense',
+                    data: expenseToSave
+                });
+                
+                return { success: true, expense: expenseToSave };
+            }
+        } catch (error) {
+            console.error('Error saving expense:', error);
+            showNotification('Error saving expense: ' + error.message, 'error');
+            return { success: false, error };
+        }
+    },
+    
+    async fetchPurchases() {
+        try {
+            if (isOnline) {
+                const { data, error } = await supabase.from('purchases').select('*').order('date', { ascending: false });
+                if (error) throw error;
+                purchases = data || [];
+                saveToLocalStorage();
+                return purchases;
+            }
+            return purchases;
+        } catch (error) {
+            console.error('Error in fetchPurchases:', error);
+            showNotification('Error fetching purchases: ' + error.message, 'error');
+            return purchases;
+        }
+    },
+    
+    async savePurchase(purchase) {
+        try {
+            const purchaseToSave = {
+                ...purchase,
+                created_at: new Date().toISOString(),
+                created_by: currentUser.id
+            };
+            
+            if (isOnline) {
+                const { data, error } = await supabase
+                    .from('purchases')
+                    .insert(purchaseToSave)
+                    .select();
+                
+                if (error) throw error;
+                
+                if (data && data.length > 0) {
+                    purchases.unshift(data[0]);
+                    saveToLocalStorage();
+                    return { success: true, purchase: data[0] };
+                }
+            } else {
+                purchaseToSave.id = 'temp_' + Date.now();
+                purchases.unshift(purchaseToSave);
+                saveToLocalStorage();
+                
+                addToSyncQueue({
+                    type: 'savePurchase',
+                    data: purchaseToSave
+                });
+                
+                return { success: true, purchase: purchaseToSave };
+            }
+        } catch (error) {
+            console.error('Error saving purchase:', error);
+            showNotification('Error saving purchase: ' + error.message, 'error');
+            return { success: false, error };
+        }
+    },
+    
+    calculateProfit(startDate, endDate) {
+        const filteredSales = sales.filter(sale => {
+            const saleDate = new Date(sale.created_at);
+            return saleDate >= new Date(startDate) && saleDate <= new Date(endDate);
+        });
+        
+        const filteredExpenses = expenses.filter(expense => {
+            const expenseDate = new Date(expense.date);
+            return expenseDate >= new Date(startDate) && expenseDate <= new Date(endDate);
+        });
+        
+        const totalRevenue = filteredSales.reduce((sum, sale) => sum + sale.total, 0);
+        const totalExpenses = filteredExpenses.reduce((sum, expense) => sum + expense.amount, 0);
+        
+        return {
+            revenue: totalRevenue,
+            expenses: totalExpenses,
+            profit: totalRevenue - totalExpenses,
+            salesCount: filteredSales.length,
+            expenseCount: filteredExpenses.length
+        };
+    },
+    
+    checkStockLevels() {
+        const alerts = [];
+        const today = new Date();
+        
+        products.forEach(product => {
+            if (product.deleted) return;
+            
+            // Check for low stock
+            if (product.stock <= settings.lowStockThreshold) {
+                alerts.push({
+                    id: product.id,
+                    type: 'low_stock',
+                    productId: product.id,
+                    productName: product.name,
+                    currentStock: product.stock,
+                    threshold: settings.lowStockThreshold,
+                    message: `Low stock alert: ${product.name} has only ${product.stock} items left (threshold: ${settings.lowStockThreshold})`,
+                    created_at: today.toISOString()
+                });
+            }
+            
+            // Check for expiry dates
+            const expiryDate = new Date(product.expiryDate);
+            const daysUntilExpiry = Math.ceil((expiryDate - today) / (1000 * 60 * 60 * 24));
+            
+            if (daysUntilExpiry <= settings.expiryWarningDays) {
+                alerts.push({
+                    id: product.id + '_expiry',
+                    type: 'expiry_warning',
+                    productId: product.id,
+                    productName: product.name,
+                    expiryDate: product.expiryDate,
+                    daysUntilExpiry: daysUntilExpiry,
+                    message: `Expiry warning: ${product.name} expires in ${daysUntilExpiry} days`,
+                    created_at: today.toISOString()
+                });
+            }
+        });
+        
+        stockAlerts = alerts;
+        saveToLocalStorage();
+        return alerts;
+    },
+    
+    detectDiscrepancies() {
+        const discrepancies = [];
+        
+        // Check for sales with negative or zero totals
+        sales.forEach(sale => {
+            if (sale.total <= 0) {
+                discrepancies.push({
+                    type: 'invalid_sale_total',
+                    saleId: sale.id,
+                    receiptNumber: sale.receiptNumber,
+                    message: `Sale with receipt #${sale.receiptNumber} has an invalid total: ${sale.total}`,
+                    created_at: new Date().toISOString()
+                });
+            }
+            
+            // Check for sales with empty items
+            if (!sale.items || sale.items.length === 0) {
+                discrepancies.push({
+                    type: 'empty_sale_items',
+                    saleId: sale.id,
+                    receiptNumber: sale.receiptNumber,
+                    message: `Sale with receipt #${sale.receiptNumber} has no items`,
+                    created_at: new Date().toISOString()
+                });
+            }
+        });
+        
+        // Check for products with negative stock
+        products.forEach(product => {
+            if (product.stock < 0) {
+                discrepancies.push({
+                    type: 'negative_stock',
+                    productId: product.id,
+                    productName: product.name,
+                    currentStock: product.stock,
+                    message: `Product ${product.name} has negative stock: ${product.stock}`,
+                    created_at: new Date().toISOString()
+                });
+            }
+        });
+        
+        return discrepancies;
+    },
+    
     async saveProduct(product) {
         const productModalLoading = document.getElementById('product-modal-loading');
         const saveProductBtn = document.getElementById('save-product-btn');
@@ -966,6 +1199,10 @@ async function processSyncQueue() {
                 success = await syncDeleteProduct(operation);
             } else if (operation.type === 'deleteSale') {
                 success = await syncDeleteSale(operation);
+            } else if (operation.type === 'saveExpense') {
+                success = await syncExpense(operation);
+            } else if (operation.type === 'savePurchase') {
+                success = await syncPurchase(operation);
             }
             
             if (success) {
@@ -1221,6 +1458,56 @@ async function syncDeleteSale(operation) {
     }
 }
 
+async function syncExpense(operation) {
+    try {
+        const { data, error } = await supabase
+            .from('expenses')
+            .insert(operation.data)
+            .select();
+        
+        if (error) throw error;
+        
+        if (data && data.length > 0) {
+            const localExpenseIndex = expenses.findIndex(e => e.id === operation.data.id);
+            if (localExpenseIndex !== -1) {
+                expenses[localExpenseIndex].id = data[0].id;
+                saveToLocalStorage();
+            }
+            return true;
+        }
+        
+        return false;
+    } catch (error) {
+        console.error('Error syncing expense:', error);
+        return false;
+    }
+}
+
+async function syncPurchase(operation) {
+    try {
+        const { data, error } = await supabase
+            .from('purchases')
+            .insert(operation.data)
+            .select();
+        
+        if (error) throw error;
+        
+        if (data && data.length > 0) {
+            const localPurchaseIndex = purchases.findIndex(p => p.id === operation.data.id);
+            if (localPurchaseIndex !== -1) {
+                purchases[localPurchaseIndex].id = data[0].id;
+                saveToLocalStorage();
+            }
+            return true;
+        }
+        
+        return false;
+    } catch (error) {
+        console.error('Error syncing purchase:', error);
+        return false;
+    }
+}
+
 function loadSyncQueue() {
     const savedQueue = localStorage.getItem('syncQueue');
     if (savedQueue) {
@@ -1302,6 +1589,32 @@ function setupRealtimeListeners() {
                 });
             })
             .subscribe();
+        
+        supabase
+            .channel('expenses-changes')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'expenses' }, () => {
+                DataModule.fetchExpenses().then(updatedExpenses => {
+                    expenses = updatedExpenses;
+                    saveToLocalStorage();
+                    if (currentPage === 'expenses') {
+                        loadExpenses();
+                    }
+                });
+            })
+            .subscribe();
+        
+        supabase
+            .channel('purchases-changes')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'purchases' }, () => {
+                DataModule.fetchPurchases().then(updatedPurchases => {
+                    purchases = updatedPurchases;
+                    saveToLocalStorage();
+                    if (currentPage === 'purchases') {
+                        loadPurchases();
+                    }
+                });
+            })
+            .subscribe();
     }
 }
 
@@ -1314,6 +1627,10 @@ function loadFromLocalStorage() {
         deletedSales = [];
         users = [];
         currentUser = null;
+        expenses = [];
+        purchases = [];
+        stockAlerts = [];
+        profitData = [];
         
         // Load products
         const savedProducts = localStorage.getItem(STORAGE_KEYS.PRODUCTS);
@@ -1393,6 +1710,50 @@ function loadFromLocalStorage() {
                 console.error('Error parsing current user from localStorage:', parseError);
             }
         }
+        
+        // Load expenses
+        const savedExpenses = localStorage.getItem(STORAGE_KEYS.EXPENSES);
+        if (savedExpenses) {
+            try {
+                expenses = JSON.parse(savedExpenses);
+            } catch (parseError) {
+                console.error('Error parsing expenses from localStorage:', parseError);
+                expenses = [];
+            }
+        }
+        
+        // Load purchases
+        const savedPurchases = localStorage.getItem(STORAGE_KEYS.PURCHASES);
+        if (savedPurchases) {
+            try {
+                purchases = JSON.parse(savedPurchases);
+            } catch (parseError) {
+                console.error('Error parsing purchases from localStorage:', parseError);
+                purchases = [];
+            }
+        }
+        
+        // Load stock alerts
+        const savedStockAlerts = localStorage.getItem(STORAGE_KEYS.STOCK_ALERTS);
+        if (savedStockAlerts) {
+            try {
+                stockAlerts = JSON.parse(savedStockAlerts);
+            } catch (parseError) {
+                console.error('Error parsing stock alerts from localStorage:', parseError);
+                stockAlerts = [];
+            }
+        }
+        
+        // Load profit data
+        const savedProfitData = localStorage.getItem(STORAGE_KEYS.PROFIT_DATA);
+        if (savedProfitData) {
+            try {
+                profitData = JSON.parse(savedProfitData);
+            } catch (parseError) {
+                console.error('Error parsing profit data from localStorage:', parseError);
+                profitData = [];
+            }
+        }
     } catch (e) {
         console.error('Error loading data from localStorage:', e);
         // Reset to defaults on error
@@ -1401,6 +1762,10 @@ function loadFromLocalStorage() {
         deletedSales = [];
         users = [];
         currentUser = null;
+        expenses = [];
+        purchases = [];
+        stockAlerts = [];
+        profitData = [];
     }
 }
 
@@ -1411,6 +1776,10 @@ function saveToLocalStorage() {
         localStorage.setItem(STORAGE_KEYS.DELETED_SALES, JSON.stringify(deletedSales));
         localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(users));
         localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
+        localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(expenses));
+        localStorage.setItem(STORAGE_KEYS.PURCHASES, JSON.stringify(purchases));
+        localStorage.setItem(STORAGE_KEYS.STOCK_ALERTS, JSON.stringify(stockAlerts));
+        localStorage.setItem(STORAGE_KEYS.PROFIT_DATA, JSON.stringify(profitData));
         
         if (currentUser) {
             localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(currentUser));
@@ -1441,6 +1810,26 @@ function validateDataStructure() {
     
     if (!Array.isArray(users)) {
         users = [];
+        isValid = false;
+    }
+    
+    if (!Array.isArray(expenses)) {
+        expenses = [];
+        isValid = false;
+    }
+    
+    if (!Array.isArray(purchases)) {
+        purchases = [];
+        isValid = false;
+    }
+    
+    if (!Array.isArray(stockAlerts)) {
+        stockAlerts = [];
+        isValid = false;
+    }
+    
+    if (!Array.isArray(profitData)) {
+        profitData = [];
         isValid = false;
     }
     
@@ -1572,6 +1961,15 @@ async function showApp() {
             }
         }
         
+        // Load expenses and purchases
+        if (expenses.length === 0) {
+            await DataModule.fetchExpenses();
+        }
+        
+        if (purchases.length === 0) {
+            await DataModule.fetchPurchases();
+        }
+        
         loadProducts();
         loadSales();
         setupRealtimeListeners();
@@ -1608,7 +2006,7 @@ function formatCurrency(amount) {
     }).format(amount);
 }
 
-function formatDate(date) {
+function formatDate(date, short = false) {
     if (!date) return '-';
     
     if (typeof date === 'string') {
@@ -1618,6 +2016,10 @@ function formatDate(date) {
             return '-';
         }
         
+        if (short) {
+            return d.toLocaleDateString();
+        }
+        
         return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
     }
     
@@ -1625,6 +2027,10 @@ function formatDate(date) {
     
     if (isNaN(d.getTime())) {
         return '-';
+    }
+    
+    if (short) {
+        return d.toLocaleDateString();
     }
     
     return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
@@ -1662,6 +2068,9 @@ function showPage(pageName) {
         'pos': 'Point of Sale',
         'inventory': 'Inventory Management',
         'reports': 'Sales Reports',
+        'expenses': 'Expense Management',
+        'purchases': 'Purchase Management',
+        'analytics': 'Business Analytics',
         'account': 'My Account'
     };
     
@@ -1674,6 +2083,12 @@ function showPage(pageName) {
         loadReports();
     } else if (pageName === 'account') {
         loadAccount();
+    } else if (pageName === 'expenses') {
+        loadExpenses();
+    } else if (pageName === 'purchases') {
+        loadPurchases();
+    } else if (pageName === 'analytics') {
+        loadAnalytics();
     }
 }
 
@@ -2591,6 +3006,8 @@ async function refreshAllData() {
         let newProducts = [];
         let newSales = [];
         let newDeletedSales = [];
+        let newExpenses = [];
+        let newPurchases = [];
         
         try {
             newProducts = await DataModule.fetchProducts();
@@ -2613,9 +3030,25 @@ async function refreshAllData() {
             newDeletedSales = deletedSales;
         }
         
+        try {
+            newExpenses = await DataModule.fetchExpenses();
+        } catch (error) {
+            console.error('Error fetching expenses:', error);
+            newExpenses = expenses;
+        }
+        
+        try {
+            newPurchases = await DataModule.fetchPurchases();
+        } catch (error) {
+            console.error('Error fetching purchases:', error);
+            newPurchases = purchases;
+        }
+        
         products = newProducts;
         sales = newSales;
         deletedSales = newDeletedSales;
+        expenses = newExpenses;
+        purchases = newPurchases;
         
         validateSalesData();
         
@@ -2630,6 +3063,12 @@ async function refreshAllData() {
             generateReport();
         } else if (currentPage === 'account') {
             loadAccount();
+        } else if (currentPage === 'expenses') {
+            loadExpenses();
+        } else if (currentPage === 'purchases') {
+            loadPurchases();
+        } else if (currentPage === 'analytics') {
+            loadAnalytics();
         }
         
         if (syncQueue.length > 0) {
@@ -2660,6 +3099,1390 @@ async function refreshAllData() {
         
         showNotification('Error syncing data. Please try again.', 'error');
     }
+}
+
+// New UI Functions for Expenses
+function showExpensesPage() {
+    const expensesPage = document.getElementById('expenses-page');
+    if (!expensesPage) {
+        createExpensesPage();
+    }
+    
+    showPage('expenses');
+    loadExpenses();
+}
+
+function createExpensesPage() {
+    const mainContent = document.querySelector('.main-content');
+    
+    const expensesPage = document.createElement('div');
+    expensesPage.id = 'expenses-page';
+    expensesPage.className = 'page-content';
+    
+    expensesPage.innerHTML = `
+        <div class="page-header">
+            <h2>Expense Management</h2>
+            <div class="page-actions">
+                <button id="add-expense-btn" class="btn btn-primary">
+                    <i class="fas fa-plus"></i> Add Expense
+                </button>
+                <button id="refresh-expenses-btn" class="btn btn-secondary">
+                    <i class="fas fa-sync"></i> Refresh
+                </button>
+            </div>
+        </div>
+        
+        <div class="expense-summary">
+            <div class="summary-card">
+                <h3>Total Expenses (This Month)</h3>
+                <p id="monthly-expenses-total">${formatCurrency(0)}</p>
+            </div>
+            <div class="summary-card">
+                <h3>Total Expenses (This Year)</h3>
+                <p id="yearly-expenses-total">${formatCurrency(0)}</p>
+            </div>
+            <div class="summary-card">
+                <h3>Expense Categories</h3>
+                <div id="expense-categories-chart"></div>
+            </div>
+        </div>
+        
+        <div class="table-container">
+            <div class="table-header">
+                <h3>Recent Expenses</h3>
+                <div class="table-actions">
+                    <input type="text" id="expense-search" placeholder="Search expenses...">
+                    <select id="expense-filter-category">
+                        <option value="">All Categories</option>
+                    </select>
+                    <input type="date" id="expense-filter-date">
+                </div>
+            </div>
+            <div class="loading" id="expenses-loading" style="display: none;">
+                <i class="fas fa-spinner fa-spin"></i> Loading expenses...
+            </div>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Description</th>
+                        <th>Category</th>
+                        <th>Amount</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="expenses-table-body">
+                    <tr>
+                        <td colspan="5" style="text-align: center;">No expenses data available</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    `;
+    
+    mainContent.appendChild(expensesPage);
+    
+    // Add event listeners
+    document.getElementById('add-expense-btn').addEventListener('click', openExpenseModal);
+    document.getElementById('refresh-expenses-btn').addEventListener('click', refreshExpenses);
+    document.getElementById('expense-search').addEventListener('input', filterExpenses);
+    document.getElementById('expense-filter-category').addEventListener('change', filterExpenses);
+    document.getElementById('expense-filter-date').addEventListener('change', filterExpenses);
+    
+    // Populate category filter
+    const categoryFilter = document.getElementById('expense-filter-category');
+    expenseCategories.forEach(category => {
+        const option = document.createElement('option');
+        option.value = category;
+        option.textContent = category;
+        categoryFilter.appendChild(option);
+    });
+}
+
+// Create expense modal
+function createExpenseModal() {
+    const modal = document.createElement('div');
+    modal.id = 'expense-modal';
+    modal.className = 'modal';
+    
+    modal.innerHTML = `
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="expense-modal-title">Add Expense</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="expense-form">
+                    <div class="form-group">
+                        <label for="expense-date">Date</label>
+                        <input type="date" id="expense-date" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="expense-description">Description</label>
+                        <input type="text" id="expense-description" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="expense-category">Category</label>
+                        <select id="expense-category" required>
+                            <option value="">Select Category</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="expense-amount">Amount</label>
+                        <input type="number" id="expense-amount" step="0.01" min="0" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="expense-receipt">Receipt/Invoice #</label>
+                        <input type="text" id="expense-receipt">
+                    </div>
+                    <div class="form-group">
+                        <label for="expense-notes">Notes</label>
+                        <textarea id="expense-notes" rows="3"></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button id="save-expense-btn" class="btn btn-primary">Save Expense</button>
+                <button id="cancel-expense-btn" class="btn btn-secondary">Cancel</button>
+            </div>
+            <div class="modal-loading" id="expense-modal-loading" style="display: none;">
+                <i class="fas fa-spinner fa-spin"></i> Saving expense...
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+    
+    // Populate category dropdown
+    const categorySelect = document.getElementById('expense-category');
+    expenseCategories.forEach(category => {
+        const option = document.createElement('option');
+        option.value = category;
+        option.textContent = category;
+        categorySelect.appendChild(option);
+    });
+    
+    // Add event listeners
+    document.querySelector('#expense-modal .modal-close').addEventListener('click', closeExpenseModal);
+    document.getElementById('cancel-expense-btn').addEventListener('click', closeExpenseModal);
+    document.getElementById('save-expense-btn').addEventListener('click', saveExpense);
+    
+    // Set default date to today
+    document.getElementById('expense-date').valueAsDate = new Date();
+}
+
+function openExpenseModal(expense = null) {
+    if (!document.getElementById('expense-modal')) {
+        createExpenseModal();
+    }
+    
+    const modalTitle = document.getElementById('expense-modal-title');
+    const expenseForm = document.getElementById('expense-form');
+    
+    if (expense) {
+        modalTitle.textContent = 'Edit Expense';
+        document.getElementById('expense-date').value = expense.date;
+        document.getElementById('expense-description').value = expense.description;
+        document.getElementById('expense-category').value = expense.category;
+        document.getElementById('expense-amount').value = expense.amount;
+        document.getElementById('expense-receipt').value = expense.receipt || '';
+        document.getElementById('expense-notes').value = expense.notes || '';
+        
+        expenseForm.dataset.expenseId = expense.id;
+    } else {
+        modalTitle.textContent = 'Add Expense';
+        expenseForm.reset();
+        document.getElementById('expense-date').valueAsDate = new Date();
+        delete expenseForm.dataset.expenseId;
+    }
+    
+    document.getElementById('expense-modal').style.display = 'flex';
+}
+
+function closeExpenseModal() {
+    document.getElementById('expense-modal').style.display = 'none';
+}
+
+async function saveExpense() {
+    const expenseForm = document.getElementById('expense-form');
+    const expenseId = expenseForm.dataset.expenseId;
+    
+    const expenseData = {
+        date: document.getElementById('expense-date').value,
+        description: document.getElementById('expense-description').value,
+        category: document.getElementById('expense-category').value,
+        amount: parseFloat(document.getElementById('expense-amount').value),
+        receipt: document.getElementById('expense-receipt').value,
+        notes: document.getElementById('expense-notes').value
+    };
+    
+    if (expenseId) {
+        expenseData.id = expenseId;
+    }
+    
+    const modalLoading = document.getElementById('expense-modal-loading');
+    const saveBtn = document.getElementById('save-expense-btn');
+    
+    modalLoading.style.display = 'flex';
+    saveBtn.disabled = true;
+    
+    try {
+        const result = await DataModule.saveExpense(expenseData);
+        
+        if (result.success) {
+            closeExpenseModal();
+            loadExpenses();
+            showNotification('Expense saved successfully', 'success');
+        } else {
+            showNotification('Failed to save expense', 'error');
+        }
+    } catch (error) {
+        console.error('Error saving expense:', error);
+        showNotification('Error saving expense', 'error');
+    } finally {
+        modalLoading.style.display = 'none';
+        saveBtn.disabled = false;
+    }
+}
+
+async function loadExpenses() {
+    const loading = document.getElementById('expenses-loading');
+    const tableBody = document.getElementById('expenses-table-body');
+    
+    loading.style.display = 'flex';
+    
+    try {
+        await DataModule.fetchExpenses();
+        
+        // Calculate monthly and yearly totals
+        const now = new Date();
+        const currentMonth = now.getMonth();
+        const currentYear = now.getFullYear();
+        
+        let monthlyTotal = 0;
+        let yearlyTotal = 0;
+        
+        expenses.forEach(expense => {
+            const expenseDate = new Date(expense.date);
+            
+            if (expenseDate.getMonth() === currentMonth && expenseDate.getFullYear() === currentYear) {
+                monthlyTotal += expense.amount;
+            }
+            
+            if (expenseDate.getFullYear() === currentYear) {
+                yearlyTotal += expense.amount;
+            }
+        });
+        
+        document.getElementById('monthly-expenses-total').textContent = formatCurrency(monthlyTotal);
+        document.getElementById('yearly-expenses-total').textContent = formatCurrency(yearlyTotal);
+        
+        // Populate expense table
+        if (expenses.length === 0) {
+            tableBody.innerHTML = `
+                <tr>
+                    <td colspan="5" style="text-align: center;">No expenses data available</td>
+                </tr>
+            `;
+        } else {
+            tableBody.innerHTML = '';
+            
+            expenses.slice(0, 20).forEach(expense => {
+                const row = document.createElement('tr');
+                
+                row.innerHTML = `
+                    <td>${formatDate(expense.date)}</td>
+                    <td>${expense.description}</td>
+                    <td>${expense.category}</td>
+                    <td>${formatCurrency(expense.amount)}</td>
+                    <td>
+                        <div class="action-buttons">
+                            <button class="btn-edit" onclick="editExpense('${expense.id}')" title="Edit Expense">
+                                <i class="fas fa-edit"></i>
+                            </button>
+                            <button class="btn-delete" onclick="deleteExpense('${expense.id}')" title="Delete Expense">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
+                    </td>
+                `;
+                
+                tableBody.appendChild(row);
+            });
+        }
+        
+        // Create expense categories chart
+        createExpenseCategoriesChart();
+    } catch (error) {
+        console.error('Error loading expenses:', error);
+        showNotification('Error loading expenses', 'error');
+    } finally {
+        loading.style.display = 'none';
+    }
+}
+
+function createExpenseCategoriesChart() {
+    const chartContainer = document.getElementById('expense-categories-chart');
+    if (!chartContainer) return;
+    
+    // Calculate totals by category
+    const categoryTotals = {};
+    
+    expenses.forEach(expense => {
+        if (!categoryTotals[expense.category]) {
+            categoryTotals[expense.category] = 0;
+        }
+        categoryTotals[expense.category] += expense.amount;
+    });
+    
+    // Sort categories by total
+    const sortedCategories = Object.entries(categoryTotals)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5); // Top 5 categories
+    
+    if (sortedCategories.length === 0) {
+        chartContainer.innerHTML = '<p>No expense data available</p>';
+        return;
+    }
+    
+    // Create a simple bar chart
+    let maxAmount = Math.max(...sortedCategories.map(c => c[1]));
+    
+    let chartHTML = '<div class="simple-bar-chart">';
+    
+    sortedCategories.forEach(([category, amount]) => {
+        const percentage = (amount / maxAmount) * 100;
+        chartHTML += `
+            <div class="bar-item">
+                <div class="bar-label">${category}</div>
+                <div class="bar-container">
+                    <div class="bar" style="width: ${percentage}%"></div>
+                </div>
+                <div class="bar-value">${formatCurrency(amount)}</div>
+            </div>
+        `;
+    });
+    
+    chartHTML += '</div>';
+    chartContainer.innerHTML = chartHTML;
+}
+
+function editExpense(expenseId) {
+    const expense = expenses.find(e => e.id === expenseId);
+    if (expense) {
+        openExpenseModal(expense);
+    }
+}
+
+async function deleteExpense(expenseId) {
+    if (!confirm('Are you sure you want to delete this expense?')) {
+        return;
+    }
+    
+    try {
+        // Remove from local array
+        expenses = expenses.filter(e => e.id !== expenseId);
+        saveToLocalStorage();
+        
+        // Remove from database if online
+        if (isOnline) {
+            await supabase.from('expenses').delete().eq('id', expenseId);
+        } else {
+            // Add to sync queue
+            addToSyncQueue({
+                type: 'deleteExpense',
+                id: expenseId
+            });
+        }
+        
+        loadExpenses();
+        showNotification('Expense deleted successfully', 'success');
+    } catch (error) {
+        console.error('Error deleting expense:', error);
+        showNotification('Error deleting expense', 'error');
+    }
+}
+
+function filterExpenses() {
+    const searchTerm = document.getElementById('expense-search').value.toLowerCase();
+    const categoryFilter = document.getElementById('expense-filter-category').value;
+    const dateFilter = document.getElementById('expense-filter-date').value;
+    
+    const filteredExpenses = expenses.filter(expense => {
+        let matchesSearch = true;
+        let matchesCategory = true;
+        let matchesDate = true;
+        
+        if (searchTerm) {
+            matchesSearch = expense.description.toLowerCase().includes(searchTerm) ||
+                           expense.notes.toLowerCase().includes(searchTerm) ||
+                           expense.receipt.toLowerCase().includes(searchTerm);
+        }
+        
+        if (categoryFilter) {
+            matchesCategory = expense.category === categoryFilter;
+        }
+        
+        if (dateFilter) {
+            matchesDate = expense.date === dateFilter;
+        }
+        
+        return matchesSearch && matchesCategory && matchesDate;
+    });
+    
+    const tableBody = document.getElementById('expenses-table-body');
+    
+    if (filteredExpenses.length === 0) {
+        tableBody.innerHTML = `
+            <tr>
+                <td colspan="5" style="text-align: center;">No expenses match the current filters</td>
+            </tr>
+        `;
+    } else {
+        tableBody.innerHTML = '';
+        
+        filteredExpenses.forEach(expense => {
+            const row = document.createElement('tr');
+            
+            row.innerHTML = `
+                <td>${formatDate(expense.date)}</td>
+                <td>${expense.description}</td>
+                <td>${expense.category}</td>
+                <td>${formatCurrency(expense.amount)}</td>
+                <td>
+                    <div class="action-buttons">
+                        <button class="btn-edit" onclick="editExpense('${expense.id}')" title="Edit Expense">
+                            <i class="fas fa-edit"></i>
+                        </button>
+                        <button class="btn-delete" onclick="deleteExpense('${expense.id}')" title="Delete Expense">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </div>
+                </td>
+            `;
+            
+            tableBody.appendChild(row);
+        });
+    }
+}
+
+async function refreshExpenses() {
+    await loadExpenses();
+    showNotification('Expenses refreshed', 'success');
+}
+
+// New UI Functions for Purchases
+function showPurchasesPage() {
+    const purchasesPage = document.getElementById('purchases-page');
+    if (!purchasesPage) {
+        createPurchasesPage();
+    }
+    
+    showPage('purchases');
+    loadPurchases();
+}
+
+function createPurchasesPage() {
+    const mainContent = document.querySelector('.main-content');
+    
+    const purchasesPage = document.createElement('div');
+    purchasesPage.id = 'purchases-page';
+    purchasesPage.className = 'page-content';
+    
+    purchasesPage.innerHTML = `
+        <div class="page-header">
+            <h2>Purchase Management</h2>
+            <div class="page-actions">
+                <button id="add-purchase-btn" class="btn btn-primary">
+                    <i class="fas fa-plus"></i> Add Purchase
+                </button>
+                <button id="refresh-purchases-btn" class="btn btn-secondary">
+                    <i class="fas fa-sync"></i> Refresh
+                </button>
+            </div>
+        </div>
+        
+        <div class="purchase-summary">
+            <div class="summary-card">
+                <h3>Total Purchases (This Month)</h3>
+                <p id="monthly-purchases-total">${formatCurrency(0)}</p>
+            </div>
+            <div class="summary-card">
+                <h3>Total Purchases (This Year)</h3>
+                <p id="yearly-purchases-total">${formatCurrency(0)}</p>
+            </div>
+            <div class="summary-card">
+                <h3>Suppliers</h3>
+                <p id="total-suppliers">0</p>
+            </div>
+        </div>
+        
+        <div class="table-container">
+            <div class="table-header">
+                <h3>Recent Purchases</h3>
+                <div class="table-actions">
+                    <input type="text" id="purchase-search" placeholder="Search purchases...">
+                    <input type="date" id="purchase-filter-date">
+                </div>
+            </div>
+            <div class="loading" id="purchases-loading" style="display: none;">
+                <i class="fas fa-spinner fa-spin"></i> Loading purchases...
+            </div>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Supplier</th>
+                        <th>Description</th>
+                        <th>Amount</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="purchases-table-body">
+                    <tr>
+                        <td colspan="5" style="text-align: center;">No purchases data available</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    `;
+    
+    mainContent.appendChild(purchasesPage);
+    
+    // Add event listeners
+    document.getElementById('add-purchase-btn').addEventListener('click', openPurchaseModal);
+    document.getElementById('refresh-purchases-btn').addEventListener('click', refreshPurchases);
+    document.getElementById('purchase-search').addEventListener('input', filterPurchases);
+    document.getElementById('purchase-filter-date').addEventListener('change', filterPurchases);
+}
+
+// Create purchase modal
+function createPurchaseModal() {
+    const modal = document.createElement('div');
+    modal.id = 'purchase-modal';
+    modal.className = 'modal';
+    
+    modal.innerHTML = `
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="purchase-modal-title">Add Purchase</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="purchase-form">
+                    <div class="form-group">
+                        <label for="purchase-date">Date</label>
+                        <input type="date" id="purchase-date" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="purchase-supplier">Supplier</label>
+                        <input type="text" id="purchase-supplier" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="purchase-description">Description</label>
+                        <input type="text" id="purchase-description" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="purchase-amount">Amount</label>
+                        <input type="number" id="purchase-amount" step="0.01" min="0" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="purchase-invoice">Invoice #</label>
+                        <input type="text" id="purchase-invoice">
+                    </div>
+                    <div class="form-group">
+                        <label for="purchase-notes">Notes</label>
+                        <textarea id="purchase-notes" rows="3"></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button id="save-purchase-btn" class="btn btn-primary">Save Purchase</button>
+                <button id="cancel-purchase-btn" class="btn btn-secondary">Cancel</button>
+            </div>
+            <div class="modal-loading" id="purchase-modal-loading" style="display: none;">
+                <i class="fas fa-spinner fa-spin"></i> Saving purchase...
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+    
+    // Add event listeners
+    document.querySelector('#purchase-modal .modal-close').addEventListener('click', closePurchaseModal);
+    document.getElementById('cancel-purchase-btn').addEventListener('click', closePurchaseModal);
+    document.getElementById('save-purchase-btn').addEventListener('click', savePurchase);
+    
+    // Set default date to today
+    document.getElementById('purchase-date').valueAsDate = new Date();
+}
+
+function openPurchaseModal(purchase = null) {
+    if (!document.getElementById('purchase-modal')) {
+        createPurchaseModal();
+    }
+    
+    const modalTitle = document.getElementById('purchase-modal-title');
+    const purchaseForm = document.getElementById('purchase-form');
+    
+    if (purchase) {
+        modalTitle.textContent = 'Edit Purchase';
+        document.getElementById('purchase-date').value = purchase.date;
+        document.getElementById('purchase-supplier').value = purchase.supplier;
+        document.getElementById('purchase-description').value = purchase.description;
+        document.getElementById('purchase-amount').value = purchase.amount;
+        document.getElementById('purchase-invoice').value = purchase.invoice || '';
+        document.getElementById('purchase-notes').value = purchase.notes || '';
+        
+        purchaseForm.dataset.purchaseId = purchase.id;
+    } else {
+        modalTitle.textContent = 'Add Purchase';
+        purchaseForm.reset();
+        document.getElementById('purchase-date').valueAsDate = new Date();
+        delete purchaseForm.dataset.purchaseId;
+    }
+    
+    document.getElementById('purchase-modal').style.display = 'flex';
+}
+
+function closePurchaseModal() {
+    document.getElementById('purchase-modal').style.display = 'none';
+}
+
+async function savePurchase() {
+    const purchaseForm = document.getElementById('purchase-form');
+    const purchaseId = purchaseForm.dataset.purchaseId;
+    
+    const purchaseData = {
+        date: document.getElementById('purchase-date').value,
+        supplier: document.getElementById('purchase-supplier').value,
+        description: document.getElementById('purchase-description').value,
+        amount: parseFloat(document.getElementById('purchase-amount').value),
+        invoice: document.getElementById('purchase-invoice').value,
+        notes: document.getElementById('purchase-notes').value
+    };
+    
+    if (purchaseId) {
+        purchaseData.id = purchaseId;
+    }
+    
+    const modalLoading = document.getElementById('purchase-modal-loading');
+    const saveBtn = document.getElementById('save-purchase-btn');
+    
+    modalLoading.style.display = 'flex';
+    saveBtn.disabled = true;
+    
+    try {
+        const result = await DataModule.savePurchase(purchaseData);
+        
+        if (result.success) {
+            closePurchaseModal();
+            loadPurchases();
+            showNotification('Purchase saved successfully', 'success');
+        } else {
+            showNotification('Failed to save purchase', 'error');
+        }
+    } catch (error) {
+        console.error('Error saving purchase:', error);
+        showNotification('Error saving purchase', 'error');
+    } finally {
+        modalLoading.style.display = 'none';
+        saveBtn.disabled = false;
+    }
+}
+
+async function loadPurchases() {
+    const loading = document.getElementById('purchases-loading');
+    const tableBody = document.getElementById('purchases-table-body');
+    
+    loading.style.display = 'flex';
+    
+    try {
+        await DataModule.fetchPurchases();
+        
+        // Calculate monthly and yearly totals
+        const now = new Date();
+        const currentMonth = now.getMonth();
+        const currentYear = now.getFullYear();
+        
+        let monthlyTotal = 0;
+        let yearlyTotal = 0;
+        const suppliers = new Set();
+        
+        purchases.forEach(purchase => {
+            const purchaseDate = new Date(purchase.date);
+            
+            if (purchaseDate.getMonth() === currentMonth && purchaseDate.getFullYear() === currentYear) {
+                monthlyTotal += purchase.amount;
+            }
+            
+            if (purchaseDate.getFullYear() === currentYear) {
+                yearlyTotal += purchase.amount;
+            }
+            
+            suppliers.add(purchase.supplier);
+        });
+        
+        document.getElementById('monthly-purchases-total').textContent = formatCurrency(monthlyTotal);
+        document.getElementById('yearly-purchases-total').textContent = formatCurrency(yearlyTotal);
+        document.getElementById('total-suppliers').textContent = suppliers.size;
+        
+        // Populate purchase table
+        if (purchases.length === 0) {
+            tableBody.innerHTML = `
+                <tr>
+                    <td colspan="5" style="text-align: center;">No purchases data available</td>
+                </tr>
+            `;
+        } else {
+            tableBody.innerHTML = '';
+            
+            purchases.slice(0, 20).forEach(purchase => {
+                const row = document.createElement('tr');
+                
+                row.innerHTML = `
+                    <td>${formatDate(purchase.date)}</td>
+                    <td>${purchase.supplier}</td>
+                    <td>${purchase.description}</td>
+                    <td>${formatCurrency(purchase.amount)}</td>
+                    <td>
+                        <div class="action-buttons">
+                            <button class="btn-edit" onclick="editPurchase('${purchase.id}')" title="Edit Purchase">
+                                <i class="fas fa-edit"></i>
+                            </button>
+                            <button class="btn-delete" onclick="deletePurchase('${purchase.id}')" title="Delete Purchase">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
+                    </td>
+                `;
+                
+                tableBody.appendChild(row);
+            });
+        }
+    } catch (error) {
+        console.error('Error loading purchases:', error);
+        showNotification('Error loading purchases', 'error');
+    } finally {
+        loading.style.display = 'none';
+    }
+}
+
+function editPurchase(purchaseId) {
+    const purchase = purchases.find(p => p.id === purchaseId);
+    if (purchase) {
+        openPurchaseModal(purchase);
+    }
+}
+
+async function deletePurchase(purchaseId) {
+    if (!confirm('Are you sure you want to delete this purchase?')) {
+        return;
+    }
+    
+    try {
+        // Remove from local array
+        purchases = purchases.filter(p => p.id !== purchaseId);
+        saveToLocalStorage();
+        
+        // Remove from database if online
+        if (isOnline) {
+            await supabase.from('purchases').delete().eq('id', purchaseId);
+        } else {
+            // Add to sync queue
+            addToSyncQueue({
+                type: 'deletePurchase',
+                id: purchaseId
+            });
+        }
+        
+        loadPurchases();
+        showNotification('Purchase deleted successfully', 'success');
+    } catch (error) {
+        console.error('Error deleting purchase:', error);
+        showNotification('Error deleting purchase', 'error');
+    }
+}
+
+function filterPurchases() {
+    const searchTerm = document.getElementById('purchase-search').value.toLowerCase();
+    const dateFilter = document.getElementById('purchase-filter-date').value;
+    
+    const filteredPurchases = purchases.filter(purchase => {
+        let matchesSearch = true;
+        let matchesDate = true;
+        
+        if (searchTerm) {
+            matchesSearch = purchase.supplier.toLowerCase().includes(searchTerm) ||
+                           purchase.description.toLowerCase().includes(searchTerm) ||
+                           purchase.notes.toLowerCase().includes(searchTerm) ||
+                           purchase.invoice.toLowerCase().includes(searchTerm);
+        }
+        
+        if (dateFilter) {
+            matchesDate = purchase.date === dateFilter;
+        }
+        
+        return matchesSearch && matchesDate;
+    });
+    
+    const tableBody = document.getElementById('purchases-table-body');
+    
+    if (filteredPurchases.length === 0) {
+        tableBody.innerHTML = `
+            <tr>
+                <td colspan="5" style="text-align: center;">No purchases match the current filters</td>
+            </tr>
+        `;
+    } else {
+        tableBody.innerHTML = '';
+        
+        filteredPurchases.forEach(purchase => {
+            const row = document.createElement('tr');
+            
+            row.innerHTML = `
+                <td>${formatDate(purchase.date)}</td>
+                <td>${purchase.supplier}</td>
+                <td>${purchase.description}</td>
+                <td>${formatCurrency(purchase.amount)}</td>
+                <td>
+                    <div class="action-buttons">
+                        <button class="btn-edit" onclick="editPurchase('${purchase.id}')" title="Edit Purchase">
+                            <i class="fas fa-edit"></i>
+                        </button>
+                        <button class="btn-delete" onclick="deletePurchase('${purchase.id}')" title="Delete Purchase">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </div>
+                </td>
+            `;
+            
+            tableBody.appendChild(row);
+        });
+    }
+}
+
+async function refreshPurchases() {
+    await loadPurchases();
+    showNotification('Purchases refreshed', 'success');
+}
+
+// New UI Functions for Analytics
+function showAnalyticsPage() {
+    const analyticsPage = document.getElementById('analytics-page');
+    if (!analyticsPage) {
+        createAnalyticsPage();
+    }
+    
+    showPage('analytics');
+    loadAnalytics();
+}
+
+function createAnalyticsPage() {
+    const mainContent = document.querySelector('.main-content');
+    
+    const analyticsPage = document.createElement('div');
+    analyticsPage.id = 'analytics-page';
+    analyticsPage.className = 'page-content';
+    
+    analyticsPage.innerHTML = `
+        <div class="page-header">
+            <h2>Business Analytics</h2>
+            <div class="page-actions">
+                <select id="analytics-period">
+                    <option value="week">This Week</option>
+                    <option value="month" selected>This Month</option>
+                    <option value="quarter">This Quarter</option>
+                    <option value="year">This Year</option>
+                    <option value="custom">Custom Range</option>
+                </select>
+                <div id="custom-date-range" style="display: none;">
+                    <input type="date" id="analytics-start-date">
+                    <input type="date" id="analytics-end-date">
+                </div>
+                <button id="refresh-analytics-btn" class="btn btn-secondary">
+                    <i class="fas fa-sync"></i> Refresh
+                </button>
+            </div>
+        </div>
+        
+        <div class="analytics-summary">
+            <div class="summary-card">
+                <h3>Revenue</h3>
+                <p id="analytics-revenue">${formatCurrency(0)}</p>
+            </div>
+            <div class="summary-card">
+                <h3>Expenses</h3>
+                <p id="analytics-expenses">${formatCurrency(0)}</p>
+            </div>
+            <div class="summary-card">
+                <h3>Profit</h3>
+                <p id="analytics-profit">${formatCurrency(0)}</p>
+            </div>
+            <div class="summary-card">
+                <h3>Profit Margin</h3>
+                <p id="analytics-profit-margin">0%</p>
+            </div>
+        </div>
+        
+        <div class="analytics-charts">
+            <div class="chart-container">
+                <h3>Sales Trend</h3>
+                <div id="sales-trend-chart"></div>
+            </div>
+            <div class="chart-container">
+                <h3>Top Selling Products</h3>
+                <div id="top-products-chart"></div>
+            </div>
+        </div>
+        
+        <div class="analytics-alerts">
+            <h3>Alerts & Discrepancies</h3>
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="stock-alerts">Stock Alerts</button>
+                <button class="tab-btn" data-tab="discrepancies">Discrepancies</button>
+            </div>
+            <div class="tab-content">
+                <div id="stock-alerts-tab" class="tab-pane active">
+                    <div class="loading" id="stock-alerts-loading" style="display: none;">
+                        <i class="fas fa-spinner fa-spin"></i> Checking stock levels...
+                    </div>
+                    <div id="stock-alerts-list">
+                        <p>No stock alerts</p>
+                    </div>
+                </div>
+                <div id="discrepancies-tab" class="tab-pane">
+                    <div class="loading" id="discrepancies-loading" style="display: none;">
+                        <i class="fas fa-spinner fa-spin"></i> Checking for discrepancies...
+                    </div>
+                    <div id="discrepancies-list">
+                        <p>No discrepancies found</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    mainContent.appendChild(analyticsPage);
+    
+    // Add event listeners
+    document.getElementById('refresh-analytics-btn').addEventListener('click', refreshAnalytics);
+    document.getElementById('analytics-period').addEventListener('change', handleAnalyticsPeriodChange);
+    
+    // Tab switching
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tabName = btn.getAttribute('data-tab');
+            
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            
+            document.querySelectorAll('.tab-pane').forEach(pane => pane.classList.remove('active'));
+            document.getElementById(`${tabName}-tab`).classList.add('active');
+        });
+    });
+}
+
+async function loadAnalytics() {
+    const loading = document.getElementById('analytics-loading');
+    if (loading) loading.style.display = 'flex';
+    
+    try {
+        // Get date range based on selected period
+        const period = document.getElementById('analytics-period').value;
+        let startDate, endDate;
+        
+        const today = new Date();
+        endDate = today.toISOString().split('T')[0];
+        
+        switch (period) {
+            case 'week':
+                startDate = new Date(today);
+                startDate.setDate(today.getDate() - 7);
+                startDate = startDate.toISOString().split('T')[0];
+                break;
+            case 'month':
+                startDate = new Date(today.getFullYear(), today.getMonth(), 1);
+                startDate = startDate.toISOString().split('T')[0];
+                break;
+            case 'quarter':
+                const quarter = Math.floor(today.getMonth() / 3);
+                startDate = new Date(today.getFullYear(), quarter * 3, 1);
+                startDate = startDate.toISOString().split('T')[0];
+                break;
+            case 'year':
+                startDate = new Date(today.getFullYear(), 0, 1);
+                startDate = startDate.toISOString().split('T')[0];
+                break;
+            case 'custom':
+                startDate = document.getElementById('analytics-start-date').value;
+                endDate = document.getElementById('analytics-end-date').value;
+                break;
+        }
+        
+        // Calculate profit data
+        const profitInfo = DataModule.calculateProfit(startDate, endDate);
+        
+        // Update summary cards
+        document.getElementById('analytics-revenue').textContent = formatCurrency(profitInfo.revenue);
+        document.getElementById('analytics-expenses').textContent = formatCurrency(profitInfo.expenses);
+        document.getElementById('analytics-profit').textContent = formatCurrency(profitInfo.profit);
+        
+        const profitMargin = profitInfo.revenue > 0 ? (profitInfo.profit / profitInfo.revenue * 100).toFixed(2) : 0;
+        document.getElementById('analytics-profit-margin').textContent = `${profitMargin}%`;
+        
+        // Create sales trend chart
+        createSalesTrendChart(startDate, endDate);
+        
+        // Create top products chart
+        createTopProductsChart(startDate, endDate);
+        
+        // Load stock alerts
+        loadStockAlerts();
+        
+        // Load discrepancies
+        loadDiscrepancies();
+    } catch (error) {
+        console.error('Error loading analytics:', error);
+        showNotification('Error loading analytics', 'error');
+    } finally {
+        if (loading) loading.style.display = 'none';
+    }
+}
+
+function createSalesTrendChart(startDate, endDate) {
+    const chartContainer = document.getElementById('sales-trend-chart');
+    if (!chartContainer) return;
+    
+    // Filter sales by date range
+    const filteredSales = sales.filter(sale => {
+        const saleDate = new Date(sale.created_at).toISOString().split('T')[0];
+        return saleDate >= startDate && saleDate <= endDate;
+    });
+    
+    // Group sales by day
+    const salesByDay = {};
+    
+    filteredSales.forEach(sale => {
+        const saleDate = new Date(sale.created_at).toISOString().split('T')[0];
+        if (!salesByDay[saleDate]) {
+            salesByDay[saleDate] = 0;
+        }
+        salesByDay[saleDate] += sale.total;
+    });
+    
+    // Create a simple line chart
+    const dates = Object.keys(salesByDay).sort();
+    const values = dates.map(date => salesByDay[date]);
+    
+    if (dates.length === 0) {
+        chartContainer.innerHTML = '<p>No sales data for the selected period</p>';
+        return;
+    }
+    
+    let maxValue = Math.max(...values);
+    
+    let chartHTML = '<div class="simple-line-chart">';
+    chartHTML += '<div class="chart-y-axis">';
+    
+    // Add Y-axis labels
+    for (let i = 5; i >= 0; i--) {
+        const value = (maxValue / 5) * i;
+        chartHTML += `<div class="y-label">${formatCurrency(value)}</div>`;
+    }
+    
+    chartHTML += '</div>';
+    chartHTML += '<div class="chart-content">';
+    chartHTML += '<div class="chart-grid">';
+    
+    // Add grid lines
+    for (let i = 0; i <= 5; i++) {
+        chartHTML += `<div class="grid-line" style="bottom: ${(100/5) * i}%"></div>`;
+    }
+    
+    chartHTML += '</div>';
+    chartHTML += '<div class="chart-data">';
+    
+    // Add data points and lines
+    dates.forEach((date, index) => {
+        const value = salesByDay[date];
+        const percentage = (value / maxValue) * 100;
+        
+        // Add line from previous point if not the first point
+        if (index > 0) {
+            const prevValue = salesByDay[dates[index - 1]];
+            const prevPercentage = (prevValue / maxValue) * 100;
+            
+            chartHTML += `
+                <svg class="chart-line" style="position: absolute; left: ${(100 / (dates.length - 1)) * (index - 1)}%; width: ${(100 / (dates.length - 1))}%; height: 100%; top: 0; pointer-events: none;">
+                    <line x1="0" y1="${100 - prevPercentage}%" x2="100%" y2="${100 - percentage}%" stroke="#4a6fdc" stroke-width="2" />
+                </svg>
+            `;
+        }
+        
+        // Add data point
+        chartHTML += `
+            <div class="chart-point" style="left: ${(100 / (dates.length - 1)) * index}%; bottom: ${percentage}%" title="${date}: ${formatCurrency(value)}">
+                <div class="point"></div>
+                <div class="point-label">${formatDate(date, true)}</div>
+            </div>
+        `;
+    });
+    
+    chartHTML += '</div>';
+    chartHTML += '</div>';
+    chartHTML += '</div>';
+    
+    chartContainer.innerHTML = chartHTML;
+}
+
+function createTopProductsChart(startDate, endDate) {
+    const chartContainer = document.getElementById('top-products-chart');
+    if (!chartContainer) return;
+    
+    // Filter sales by date range
+    const filteredSales = sales.filter(sale => {
+        const saleDate = new Date(sale.created_at).toISOString().split('T')[0];
+        return saleDate >= startDate && saleDate <= endDate;
+    });
+    
+    // Calculate total quantity sold for each product
+    const productSales = {};
+    
+    filteredSales.forEach(sale => {
+        sale.items.forEach(item => {
+            if (!productSales[item.id]) {
+                productSales[item.id] = {
+                    id: item.id,
+                    name: item.name,
+                    quantity: 0,
+                    revenue: 0
+                };
+            }
+            
+            productSales[item.id].quantity += item.quantity;
+            productSales[item.id].revenue += item.price * item.quantity;
+        });
+    });
+    
+    // Sort by quantity sold
+    const sortedProducts = Object.values(productSales)
+        .sort((a, b) => b.quantity - a.quantity)
+        .slice(0, 5); // Top 5 products
+    
+    if (sortedProducts.length === 0) {
+        chartContainer.innerHTML = '<p>No sales data for the selected period</p>';
+        return;
+    }
+    
+    // Create a simple bar chart
+    let maxQuantity = Math.max(...sortedProducts.map(p => p.quantity));
+    
+    let chartHTML = '<div class="simple-bar-chart">';
+    
+    sortedProducts.forEach(product => {
+        const percentage = (product.quantity / maxQuantity) * 100;
+        chartHTML += `
+            <div class="bar-item">
+                <div class="bar-label">${product.name}</div>
+                <div class="bar-container">
+                    <div class="bar" style="width: ${percentage}%"></div>
+                </div>
+                <div class="bar-value">${product.quantity} units</div>
+            </div>
+        `;
+    });
+    
+    chartHTML += '</div>';
+    chartContainer.innerHTML = chartHTML;
+}
+
+function loadStockAlerts() {
+    const loading = document.getElementById('stock-alerts-loading');
+    const alertsList = document.getElementById('stock-alerts-list');
+    
+    loading.style.display = 'flex';
+    
+    try {
+        const alerts = DataModule.checkStockLevels();
+        
+        if (alerts.length === 0) {
+            alertsList.innerHTML = '<p>No stock alerts</p>';
+        } else {
+            alertsList.innerHTML = '';
+            
+            alerts.forEach(alert => {
+                const alertDiv = document.createElement('div');
+                alertDiv.className = `alert-item ${alert.type}`;
+                
+                alertDiv.innerHTML = `
+                    <div class="alert-icon">
+                        <i class="fas ${alert.type === 'low_stock' ? 'fa-exclamation-triangle' : 'fa-clock'}"></i>
+                    </div>
+                    <div class="alert-content">
+                        <div class="alert-message">${alert.message}</div>
+                        <div class="alert-time">${formatDate(alert.created_at)}</div>
+                    </div>
+                    <div class="alert-actions">
+                        ${alert.type === 'low_stock' ? 
+                            `<button class="btn btn-sm btn-primary" onclick="restockProduct('${alert.productId}')">Restock</button>` : 
+                            `<button class="btn btn-sm btn-secondary" onclick="viewProduct('${alert.productId}')">View</button>`
+                        }
+                    </div>
+                `;
+                
+                alertsList.appendChild(alertDiv);
+            });
+        }
+    } catch (error) {
+        console.error('Error loading stock alerts:', error);
+        alertsList.innerHTML = '<p>Error loading stock alerts</p>';
+    } finally {
+        loading.style.display = 'none';
+    }
+}
+
+function loadDiscrepancies() {
+    const loading = document.getElementById('discrepancies-loading');
+    const discrepanciesList = document.getElementById('discrepancies-list');
+    
+    loading.style.display = 'flex';
+    
+    try {
+        const discrepancies = DataModule.detectDiscrepancies();
+        
+        if (discrepancies.length === 0) {
+            discrepanciesList.innerHTML = '<p>No discrepancies found</p>';
+        } else {
+            discrepanciesList.innerHTML = '';
+            
+            discrepancies.forEach(discrepancy => {
+                const discrepancyDiv = document.createElement('div');
+                discrepancyDiv.className = 'alert-item discrepancy';
+                
+                discrepancyDiv.innerHTML = `
+                    <div class="alert-icon">
+                        <i class="fas fa-exclamation-circle"></i>
+                    </div>
+                    <div class="alert-content">
+                        <div class="alert-message">${discrepancy.message}</div>
+                        <div class="alert-time">${formatDate(discrepancy.created_at)}</div>
+                    </div>
+                    <div class="alert-actions">
+                        ${discrepancy.type.includes('sale') ? 
+                            `<button class="btn btn-sm btn-secondary" onclick="viewSale('${discrepancy.saleId}')">View Sale</button>` : 
+                            `<button class="btn btn-sm btn-secondary" onclick="viewProduct('${discrepancy.productId}')">View Product</button>`
+                        }
+                    </div>
+                `;
+                
+                discrepanciesList.appendChild(discrepancyDiv);
+            });
+        }
+    } catch (error) {
+        console.error('Error loading discrepancies:', error);
+        discrepanciesList.innerHTML = '<p>Error loading discrepancies</p>';
+    } finally {
+        loading.style.display = 'none';
+    }
+}
+
+function handleAnalyticsPeriodChange() {
+    const period = document.getElementById('analytics-period').value;
+    const customDateRange = document.getElementById('custom-date-range');
+    
+    if (period === 'custom') {
+        customDateRange.style.display = 'flex';
+        
+        // Set default dates
+        const today = new Date();
+        const lastMonth = new Date(today);
+        lastMonth.setMonth(today.getMonth() - 1);
+        
+        document.getElementById('analytics-start-date').valueAsDate = lastMonth;
+        document.getElementById('analytics-end-date').valueAsDate = today;
+    } else {
+        customDateRange.style.display = 'none';
+    }
+    
+    loadAnalytics();
+}
+
+async function refreshAnalytics() {
+    await loadAnalytics();
+    showNotification('Analytics refreshed', 'success');
+}
+
+function restockProduct(productId) {
+    const product = products.find(p => p.id === productId);
+    if (product) {
+        openProductModal(product);
+    }
+}
+
+function viewProduct(productId) {
+    const product = products.find(p => p.id === productId);
+    if (product) {
+        showPage('inventory');
+        loadInventory();
+        
+        // Highlight the product in the table
+        setTimeout(() => {
+            const row = document.querySelector(`#inventory-table-body tr:has(td:first-child:contains("${productId}"))`);
+            if (row) {
+                row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                row.classList.add('highlight');
+                setTimeout(() => row.classList.remove('highlight'), 3000);
+            }
+        }, 500);
+    }
+}
+
+// Add navigation links for the new pages
+function addNavigationLinks() {
+    const sidebar = document.getElementById('sidebar');
+    const navLinks = sidebar.querySelector('.nav-links');
+    
+    // Add new navigation links
+    const expensesLink = document.createElement('a');
+    expensesLink.href = '#';
+    expensesLink.className = 'nav-link';
+    expensesLink.setAttribute('data-page', 'expenses');
+    expensesLink.innerHTML = '<i class="fas fa-receipt"></i> Expenses';
+    
+    const purchasesLink = document.createElement('a');
+    purchasesLink.href = '#';
+    purchasesLink.className = 'nav-link';
+    purchasesLink.setAttribute('data-page', 'purchases');
+    purchasesLink.innerHTML = '<i class="fas fa-shopping-cart"></i> Purchases';
+    
+    const analyticsLink = document.createElement('a');
+    analyticsLink.href = '#';
+    analyticsLink.className = 'nav-link';
+    analyticsLink.setAttribute('data-page', 'analytics');
+    analyticsLink.innerHTML = '<i class="fas fa-chart-line"></i> Analytics';
+    
+    // Insert before the account link
+    const accountLink = navLinks.querySelector('[data-page="account"]');
+    navLinks.insertBefore(expensesLink, accountLink);
+    navLinks.insertBefore(purchasesLink, accountLink);
+    navLinks.insertBefore(analyticsLink, accountLink);
+    
+    // Add event listeners for the new links
+    expensesLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        showExpensesPage();
+    });
+    
+    purchasesLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        showPurchasesPage();
+    });
+    
+    analyticsLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        showAnalyticsPage();
+    });
 }
 
 // Event Listeners
@@ -3098,6 +4921,9 @@ async function init() {
     validateSalesData();
     cleanupSyncQueue();
     
+    // Add navigation links for new features
+    addNavigationLinks();
+    
     try {
         const { data: { session }, error } = await supabase.auth.getSession();
         
@@ -3215,6 +5041,13 @@ async function init() {
     if (isOnline) {
         checkSupabaseConnection();
     }
+    
+    // Check stock levels periodically
+    setInterval(() => {
+        if (currentPage === 'analytics') {
+            loadStockAlerts();
+        }
+    }, 60000); // Check every minute
     
     // Refresh session every 30 minutes
     setInterval(async () => {
