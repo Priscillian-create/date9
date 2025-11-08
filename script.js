@@ -456,7 +456,7 @@ const DataModule = {
                     }
                 } else if (data && Array.isArray(data)) {
                     const validatedSales = data.map(sale => {
-                        // Handle both column name variations
+                        // IMPORTANT: Handle database column name (receiptnumber) to internal field (receiptNumber)
                         if (!sale.receiptNumber && sale.receiptnumber) {
                             sale.receiptNumber = sale.receiptnumber;
                         } else if (!sale.receiptNumber && !sale.receiptnumber) {
@@ -731,17 +731,14 @@ const DataModule = {
                         validCashierId = '00000000-0000-0000-0000-000000000000';
                     }
                     
-                    // Use the correct column names for your database
+                    // IMPORTANT: Use the correct database column names (lowercase)
                     const saleToSave = {
-                        ...sale,
-                        // Use actual database column names
-                        receiptnumber: sale.receiptNumber,
-                        cashierid: validCashierId,
-                        // Remove any potential problematic fields
-                        clientSaleId: undefined,
-                        receipt_number: undefined,
-                        cashier_id: undefined,
-                        cashierId: undefined
+                        receiptnumber: sale.receiptNumber,  // Database column: receiptnumber
+                        cashierid: validCashierId,          // Database column: cashierid
+                        items: sale.items,
+                        total: sale.total,
+                        created_at: sale.created_at,
+                        cashier: sale.cashier
                     };
                     
                     const { data, error } = await supabase
@@ -1055,25 +1052,23 @@ async function syncSale(operation) {
         
         operation.data.cashierId = validCashierId;
         
-        // Use receiptnumber instead of receiptNumber to match the database column
+        // IMPORTANT: Use receiptnumber (lowercase) to match the database column
         const { data: existingSales, error: fetchError } = await supabase
             .from('sales')
             .select('*')
-            .eq('receiptnumber', operation.data.receiptNumber);
+            .eq('receiptnumber', operation.data.receiptNumber);  // Database column: receiptnumber
         
         if (fetchError) throw fetchError;
         
         if (!existingSales || existingSales.length === 0) {
-            // Use the correct column names for your database
+            // IMPORTANT: Use the correct database column names (lowercase)
             const saleToSave = {
-                ...operation.data,
-                receiptnumber: operation.data.receiptNumber,
-                cashierid: validCashierId,
-                // Remove any potential problematic fields
-                clientSaleId: undefined,
-                receipt_number: undefined,
-                cashier_id: undefined,
-                cashierId: undefined
+                receiptnumber: operation.data.receiptNumber,  // Database column: receiptnumber
+                cashierid: validCashierId,                    // Database column: cashierid
+                items: operation.data.items,
+                total: operation.data.total,
+                created_at: operation.data.created_at,
+                cashier: operation.data.cashier
             };
             
             const { data, error } = await supabase
