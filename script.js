@@ -18,8 +18,8 @@ let currentPage = "pos", isOnline = navigator.onLine, syncQueue = [];
 let connectionRetryCount = 0;
 const MAX_RETRY_ATTEMPTS = 3, RETRY_DELAY = 5000;
 
-// Settings
-const settings = {
+// Settings - Changed from const to let to allow reassignment
+let settings = {
     storeName: "Pa Gerrys Mart",
     storeAddress: "Alatishe, Ibeju Lekki, Lagos State, Nigeria",
     storePhone: "+2347037850121",
@@ -1367,13 +1367,14 @@ function loadFromLocalStorage() {
             }
         }
         
-        // Load settings
+        // Load settings - Update properties of the existing settings object
         const savedSettings = localStorage.getItem(STORAGE_KEYS.SETTINGS);
         if (savedSettings) {
             try {
                 const parsedSettings = JSON.parse(savedSettings);
                 if (parsedSettings && typeof parsedSettings === 'object') {
-                    settings = { ...settings, ...parsedSettings };
+                    // Update properties of the existing settings object instead of reassigning
+                    Object.assign(settings, parsedSettings);
                 }
             } catch (parseError) {
                 console.error('Error parsing settings from localStorage:', parseError);
