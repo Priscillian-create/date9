@@ -370,6 +370,7 @@ const DataModule = {
                     }
                 } else if (data) {
                     const normalizedProducts = data.map(product => {
+                        // IMPORTANT: Handle database column name (expirydate) to internal field (expiryDate)
                         if (product.expirydate && !product.expiryDate) {
                             product.expiryDate = product.expirydate;
                         }
@@ -576,12 +577,13 @@ const DataModule = {
                 throw new Error('Please enter a valid stock quantity');
             }
             
+            // IMPORTANT: Use the correct database column names (lowercase)
             const productToSave = {
                 name: product.name,
                 category: product.category,
                 price: parseFloat(product.price),
                 stock: parseInt(product.stock),
-                expirydate: product.expiryDate,
+                expirydate: product.expiryDate,  // Database column: expirydate
                 barcode: product.barcode || null
             };
             
@@ -1109,6 +1111,7 @@ async function syncSale(operation) {
 async function syncProduct(operation) {
     try {
         if (operation.data.stock !== undefined && !operation.data.name) {
+            // IMPORTANT: Use the correct database column names (lowercase)
             const { error } = await supabase
                 .from('products')
                 .update({ stock: operation.data.stock })
@@ -1117,16 +1120,36 @@ async function syncProduct(operation) {
             if (error) throw error;
         } else {
             if (operation.data.id && !operation.data.id.startsWith('temp_')) {
+                // IMPORTANT: Use the correct database column names (lowercase)
+                const productToSave = {
+                    name: operation.data.name,
+                    category: operation.data.category,
+                    price: operation.data.price,
+                    stock: operation.data.stock,
+                    expirydate: operation.data.expiryDate,  // Database column: expirydate
+                    barcode: operation.data.barcode
+                };
+                
                 const { error } = await supabase
                     .from('products')
-                    .update(operation.data)
+                    .update(productToSave)
                     .eq('id', operation.data.id);
                 
                 if (error) throw error;
             } else {
+                // IMPORTANT: Use the correct database column names (lowercase)
+                const productToSave = {
+                    name: operation.data.name,
+                    category: operation.data.category,
+                    price: operation.data.price,
+                    stock: operation.data.stock,
+                    expirydate: operation.data.expiryDate,  // Database column: expirydate
+                    barcode: operation.data.barcode
+                };
+                
                 const { data, error } = await supabase
                     .from('products')
-                    .insert(operation.data)
+                    .insert(productToSave)
                     .select();
                 
                 if (error) throw error;
