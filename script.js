@@ -1308,69 +1308,93 @@ function setupRealtimeListeners() {
 // Local Storage Functions
 function loadFromLocalStorage() {
     try {
-        // Use let instead of const to allow reassignment
-        let savedProducts = localStorage.getItem(STORAGE_KEYS.PRODUCTS);
+        // Initialize empty arrays/objects first
+        products = [];
+        sales = [];
+        deletedSales = [];
+        users = [];
+        currentUser = null;
+        
+        // Load products
+        const savedProducts = localStorage.getItem(STORAGE_KEYS.PRODUCTS);
         if (savedProducts) {
-            const parsedProducts = JSON.parse(savedProducts);
-            if (Array.isArray(parsedProducts)) {
-                products = parsedProducts;
-            } else {
-                products = [];
+            try {
+                const parsedProducts = JSON.parse(savedProducts);
+                if (Array.isArray(parsedProducts)) {
+                    products = parsedProducts;
+                }
+            } catch (parseError) {
+                console.error('Error parsing products from localStorage:', parseError);
             }
         }
         
-        // Use let instead of const to allow reassignment
-        let savedSales = localStorage.getItem(STORAGE_KEYS.SALES);
+        // Load sales
+        const savedSales = localStorage.getItem(STORAGE_KEYS.SALES);
         if (savedSales) {
-            const parsedSales = JSON.parse(savedSales);
-            if (Array.isArray(parsedSales)) {
-                sales = parsedSales;
-            } else {
-                sales = [];
+            try {
+                const parsedSales = JSON.parse(savedSales);
+                if (Array.isArray(parsedSales)) {
+                    sales = parsedSales;
+                }
+            } catch (parseError) {
+                console.error('Error parsing sales from localStorage:', parseError);
             }
         }
         
-        // Use let instead of const to allow reassignment
-        let savedDeletedSales = localStorage.getItem(STORAGE_KEYS.DELETED_SALES);
+        // Load deleted sales
+        const savedDeletedSales = localStorage.getItem(STORAGE_KEYS.DELETED_SALES);
         if (savedDeletedSales) {
-            const parsedDeletedSales = JSON.parse(savedDeletedSales);
-            if (Array.isArray(parsedDeletedSales)) {
-                deletedSales = parsedDeletedSales;
-            } else {
-                deletedSales = [];
+            try {
+                const parsedDeletedSales = JSON.parse(savedDeletedSales);
+                if (Array.isArray(parsedDeletedSales)) {
+                    deletedSales = parsedDeletedSales;
+                }
+            } catch (parseError) {
+                console.error('Error parsing deleted sales from localStorage:', parseError);
             }
         }
         
-        // Use let instead of const to allow reassignment
-        let savedUsers = localStorage.getItem(STORAGE_KEYS.USERS);
+        // Load users
+        const savedUsers = localStorage.getItem(STORAGE_KEYS.USERS);
         if (savedUsers) {
-            const parsedUsers = JSON.parse(savedUsers);
-            if (Array.isArray(parsedUsers)) {
-                users = parsedUsers;
-            } else {
-                users = [];
+            try {
+                const parsedUsers = JSON.parse(savedUsers);
+                if (Array.isArray(parsedUsers)) {
+                    users = parsedUsers;
+                }
+            } catch (parseError) {
+                console.error('Error parsing users from localStorage:', parseError);
             }
         }
         
-        // Use let instead of const to allow reassignment
-        let savedSettings = localStorage.getItem(STORAGE_KEYS.SETTINGS);
+        // Load settings
+        const savedSettings = localStorage.getItem(STORAGE_KEYS.SETTINGS);
         if (savedSettings) {
-            const parsedSettings = JSON.parse(savedSettings);
-            if (parsedSettings && typeof parsedSettings === 'object') {
-                settings = { ...settings, ...parsedSettings };
+            try {
+                const parsedSettings = JSON.parse(savedSettings);
+                if (parsedSettings && typeof parsedSettings === 'object') {
+                    settings = { ...settings, ...parsedSettings };
+                }
+            } catch (parseError) {
+                console.error('Error parsing settings from localStorage:', parseError);
             }
         }
         
-        // Use let instead of const to allow reassignment
-        let savedCurrentUser = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
+        // Load current user
+        const savedCurrentUser = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
         if (savedCurrentUser) {
-            const parsedCurrentUser = JSON.parse(savedCurrentUser);
-            if (parsedCurrentUser && typeof parsedCurrentUser === 'object') {
-                currentUser = parsedCurrentUser;
+            try {
+                const parsedCurrentUser = JSON.parse(savedCurrentUser);
+                if (parsedCurrentUser && typeof parsedCurrentUser === 'object') {
+                    currentUser = parsedCurrentUser;
+                }
+            } catch (parseError) {
+                console.error('Error parsing current user from localStorage:', parseError);
             }
         }
     } catch (e) {
         console.error('Error loading data from localStorage:', e);
+        // Reset to defaults on error
         products = [];
         sales = [];
         deletedSales = [];
